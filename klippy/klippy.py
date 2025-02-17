@@ -339,17 +339,25 @@ def main():
         logging.warning("No log file specified!"
                         " Severe timing issues may result!")
     gc.disable()
+    logging.info("klippy 1")
 
     # Start Printer() class
     while 1:
+        logging.info("klippy 2")
         if bglogger is not None:
             bglogger.clear_rollover_info()
             bglogger.set_rollover_info('versions', versions)
         gc.collect()
+        logging.info("klippy 2.5")
+        logging.info("Creating main_reactor")
         main_reactor = reactor.Reactor(gc_checking=True)
+        logging.info("Created main_reactor")
         printer = Printer(main_reactor, bglogger, start_args)
+        logging.info("Created printer instance")
         res = printer.run()
+        logging.info("Printer run result: %s", res)
         if res in ['exit', 'error_exit']:
+            logging.info("klippy exit")
             break
         time.sleep(1.)
         main_reactor.finalize()
@@ -358,9 +366,11 @@ def main():
         start_args['start_reason'] = res
 
     if bglogger is not None:
+        logging.info("klippy stp")
         bglogger.stop()
 
     if res == 'error_exit':
+        logging.info("Error exit")
         sys.exit(-1)
 
 if __name__ == '__main__':

@@ -13,16 +13,23 @@ class DeltaKinematics:
     def __init__(self, toolhead, config):
         # Setup tower rails
         stepper_configs = [config.getsection('stepper_' + a) for a in 'abc']
-        rail_a = stepper.LookupMultiRail(
-            stepper_configs[0], need_position_minmax = False)
+        extra_configs = [config.getsection('stepper_' + a) for a in 'rt']
+        
+        # Setup main delta towers (ABC)
+        rail_a = stepper.LookupMultiRail(stepper_configs[0], need_position_minmax = False)
         a_endstop = rail_a.get_homing_info().position_endstop
-        rail_b = stepper.LookupMultiRail(
-            stepper_configs[1], need_position_minmax = False,
-            default_position_endstop=a_endstop)
-        rail_c = stepper.LookupMultiRail(
-            stepper_configs[2], need_position_minmax = False,
-            default_position_endstop=a_endstop)
-        self.rails = [rail_a, rail_b, rail_c]
+        rail_b = stepper.LookupMultiRail(stepper_configs[1], need_position_minmax = False, default_position_endstop=a_endstop)
+        rail_c = stepper.LookupMultiRail(stepper_configs[2], need_position_minmax = False, default_position_endstop=a_endstop)
+        self.delta_rails = [rail_a, rail_b, rail_c]
+        
+        # Setup auxiliary axes (R and T)
+        self.extra_rails = []
+        for cfg in extra_configs:
+            rail = stepper.LookupMultiRail(cfg, need_position_minmax = False)
+            self.extra_rails.append(rail)
+        
+        self.rails = self.delta_rails + self.extra_rails
+        
         # Setup max velocity
         self.max_velocity, self.max_accel = toolhead.get_max_velocity()
         self.max_z_velocity = config.getfloat(
@@ -48,16 +55,18 @@ class DeltaKinematics:
         self.towers = [(math.cos(math.radians(angle)) * radius,
                         math.sin(math.radians(angle)) * radius)
                        for angle in self.angles]
-        for r, a, t in zip(self.rails, self.arm2, self.towers):
-            r.setup_itersolve('delta_stepper_alloc', a, t[0], t[1])
+        for r, a, t in zip(self.delta_rails, self.arm2[:3], self.towers):
+            r.setup_itersolve('delta_stepper_alloc', a, t[0], t[1], 0)  # 0 = STEPPER_DELTA
+        for i, r in enumerate(self.extra_rails):
+            r.setup_itersolve('rt_stepper_alloc', 0., i == 0)  # i==0 means R axis
         for s in self.get_steppers():
             s.set_trapq(toolhead.get_trapq())
             toolhead.register_step_generator(s.generate_steps)
         # Setup boundary checks
         self.need_home = True
         self.limit_xy2 = -1.
-        self.home_position = tuple(
-            self._actuator_to_cartesian(self.abs_endstops))
+        # Compute home_position using ABC values and default extra axis values.
+        self.home_position = tuple(self._actuator_to_cartesian(self.abs_endstops + [0.0] * len(self.extra_rails)))
         self.max_z = min([rail.get_homing_info().position_endstop
                           for rail in self.rails])
         self.min_z = config.getfloat('minimum_z_position', 0, maxval=self.max_z)
@@ -86,14 +95,18 @@ class DeltaKinematics:
                      " and %.2fmm)"
                      % (max_xy, math.sqrt(self.slow_xy2),
                         math.sqrt(self.very_slow_xy2)))
-        self.axes_min = toolhead.Coord(-max_xy, -max_xy, self.min_z, 0.)
-        self.axes_max = toolhead.Coord(max_xy, max_xy, self.max_z, 0.)
-        self.set_position([0., 0., 0.], "")
+        self.axes_min = toolhead.Coord(-max_xy, -max_xy, self.min_z, -max_xy, -max_xy, 0.)
+        self.axes_max = toolhead.Coord(max_xy, max_xy, self.max_z, max_xy, max_xy, 0.)
+        self.set_position([0., 0., 0., 0., 0.], "")
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
     def _actuator_to_cartesian(self, spos):
-        sphere_coords = [(t[0], t[1], sp) for t, sp in zip(self.towers, spos)]
-        return mathutil.trilateration(sphere_coords, self.arm2)
+        # Use only ABC towers for delta calculation
+        primary_coords = [(t[0], t[1], sp) for t, sp in zip(self.towers, spos[:3])]
+        pos = list(mathutil.trilateration(primary_coords, self.arm2[:3]))
+        # Add R and T positions directly
+        pos.extend(spos[3:])
+        return tuple(pos)
     def calc_position(self, stepper_positions):
         spos = [stepper_positions[rail.get_name()] for rail in self.rails]
         return self._actuator_to_cartesian(spos)
@@ -101,7 +114,8 @@ class DeltaKinematics:
         for rail in self.rails:
             rail.set_position(newpos)
         self.limit_xy2 = -1.
-        if homing_axes == "xyz":
+        # Consider primary (XYZ) homing sufficient
+        if all(a in homing_axes.lower() for a in "xyz"):
             self.need_home = False
     def clear_homing_state(self, clear_axes):
         # Clearing homing state for each axis individually is not implemented
@@ -109,14 +123,33 @@ class DeltaKinematics:
             self.limit_xy2 = -1
             self.need_home = True
     def home(self, homing_state):
-        # All axes are homed simultaneously
-        homing_state.set_axes([0, 1, 2])
+        axes_to_home = homing_state.get_axes()
         forcepos = list(self.home_position)
-        forcepos[2] = -1.5 * math.sqrt(max(self.arm2)-self.max_xy2)
+        forcepos[2] = -1.5 * math.sqrt(max(self.arm2[:3]) - self.max_xy2)
+        if 3 in axes_to_home:
+            forcepos[3] = 360.0  # force position for R axis
+        else:
+            forcepos[3] = None   # skip homing for R
+        if 4 in axes_to_home:
+            forcepos[4] = 360.0  # force position for T axis
+        else:
+            forcepos[4] = None   # skip homing for T
         homing_state.home_rails(self.rails, forcepos, self.home_position)
     def check_move(self, move):
+        # Handle R and T moves independently
+        if any(move.axes_d[3:]):
+            return
+            
+        # Only check ABC movement constraints
         end_pos = move.end_pos
         end_xy2 = end_pos[0]**2 + end_pos[1]**2
+        
+        # Handle R and T moves separately
+        if all(not d for d in move.axes_d[:3]) and any(move.axes_d[3:]):
+            # Pure R/T move - no checks needed
+            return
+            
+        # Rest of the delta movement checks
         if end_xy2 <= self.limit_xy2 and not move.axes_d[2]:
             # Normal XY move
             return
@@ -153,7 +186,7 @@ class DeltaKinematics:
         self.limit_xy2 = min(limit_xy2, self.slow_xy2)
     def get_status(self, eventtime):
         return {
-            'homed_axes': '' if self.need_home else 'xyz',
+            'homed_axes': '' if self.need_home else 'xyzrt',
             'axis_minimum': self.axes_min,
             'axis_maximum': self.axes_max,
             'cone_start_z': self.limit_z,

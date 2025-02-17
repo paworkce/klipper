@@ -50,7 +50,8 @@ class HomingOverride:
         for axis, loc in enumerate(self.start_pos):
             if loc is not None:
                 pos[axis] = loc
-                homing_axes += "xyz"[axis]
+                #homing_axes += "xyz"[axis]
+                homing_axes += "xyzrt"[axis]
         toolhead.set_position(pos, homing_axes=homing_axes)
         # Perform homing
         context = self.template.create_template_context()
