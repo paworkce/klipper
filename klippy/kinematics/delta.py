@@ -111,10 +111,19 @@ class DeltaKinematics:
         spos = [stepper_positions[rail.get_name()] for rail in self.rails]
         return self._actuator_to_cartesian(spos)
     def set_position(self, newpos, homing_axes):
-        for rail in self.rails:
+        # Always update primary (ABC) rails.
+        for rail in self.delta_rails:
             rail.set_position(newpos)
+        # Update extra rails (R/T) only if homing for them is requested.
+        extra_letters = "rt"
+        for i, rail in enumerate(self.extra_rails):
+            if extra_letters[i] in homing_axes.lower():
+                rail.set_position(newpos)
+            else:
+                # Leave extra rail position unchanged.
+                pass
         self.limit_xy2 = -1.
-        # Consider primary (XYZ) homing sufficient
+        # A homed primary (XYZ) is considered sufficient for movement.
         if all(a in homing_axes.lower() for a in "xyz"):
             self.need_home = False
     def clear_homing_state(self, clear_axes):
@@ -135,6 +144,8 @@ class DeltaKinematics:
         else:
             forcepos[4] = None   # skip homing for T
         homing_state.home_rails(self.rails, forcepos, self.home_position)
+        # After homing rails complete, consider printer homed
+        self.need_home = False
     def check_move(self, move):
         # Handle R and T moves independently
         if any(move.axes_d[3:]):
