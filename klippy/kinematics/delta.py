@@ -29,6 +29,8 @@ class DeltaKinematics:
             self.extra_rails.append(rail)
         
         self.rails = self.delta_rails + self.extra_rails
+        # NEW: Set move_rails to only include delta towers for moves and calibration.
+        self.move_rails = self.delta_rails
         
         # Setup max velocity
         self.max_velocity, self.max_accel = toolhead.get_max_velocity()
@@ -45,6 +47,13 @@ class DeltaKinematics:
             sconfig.getfloat('arm_length', arm_length_a, above=radius)
             for sconfig in stepper_configs]
         self.arm2 = [arm**2 for arm in arm_lengths]
+        # OLD: self.abs_endstops = [...]
+        # NEW: Compute delta-only abs_endstops for moving/calibration using only delta_rails.
+        self.delta_abs_endstops = [
+            rail.get_homing_info().position_endstop + math.sqrt(arm2 - radius**2)
+            for rail, arm2 in zip(self.delta_rails, self.arm2[:3])
+        ]
+        # For homing (which uses all rails) continue computing:
         self.abs_endstops = [(rail.get_homing_info().position_endstop
                               + math.sqrt(arm2 - radius**2))
                              for rail, arm2 in zip(self.rails, self.arm2)]
@@ -65,13 +74,14 @@ class DeltaKinematics:
         # Setup boundary checks
         self.need_home = True
         self.limit_xy2 = -1.
-        # Compute home_position using ABC values and default extra axis values.
-        self.home_position = tuple(self._actuator_to_cartesian(self.abs_endstops + [0.0] * len(self.extra_rails)))
+        # Compute home_position using delta_abs_endstops and default extra axis values.
+        self.home_position = tuple(self._actuator_to_cartesian(self.delta_abs_endstops + [0.0] * len(self.extra_rails)))
+        # NEW: Use only delta rails for setting Z limits.
         self.max_z = min([rail.get_homing_info().position_endstop
-                          for rail in self.rails])
-        self.min_z = config.getfloat('minimum_z_position', 0, maxval=self.max_z)
+                          for rail in self.delta_rails])
         self.limit_z = min([ep - arm
-                            for ep, arm in zip(self.abs_endstops, arm_lengths)])
+                            for ep, arm in zip(self.delta_abs_endstops, self.arm_lengths)])
+        self.min_z = config.getfloat('minimum_z_position', 0, maxval=self.max_z)
         self.min_arm_length = min_arm_length = min(arm_lengths)
         self.min_arm2 = min_arm_length**2
         logging.info(
@@ -108,8 +118,11 @@ class DeltaKinematics:
         pos.extend(spos[3:])
         return tuple(pos)
     def calc_position(self, stepper_positions):
-        spos = [stepper_positions[rail.get_name()] for rail in self.rails]
-        return self._actuator_to_cartesian(spos)
+        # Use only delta rails for determining the move-related position.
+        spos = [stepper_positions[rail.get_name()] for rail in self.move_rails]
+        # Append current extra axis positions (unchanged in moves)
+        extra = [ self.home_position[i+3] for i in range(len(self.extra_rails)) ]
+        return self._actuator_to_cartesian(spos + extra)
     def set_position(self, newpos, homing_axes):
         # Always update primary (ABC) rails.
         for rail in self.delta_rails:
@@ -151,22 +164,21 @@ class DeltaKinematics:
         if any(move.axes_d[3:]):
             return
             
-        # Only check ABC movement constraints
-        end_pos = move.end_pos
-        end_xy2 = end_pos[0]**2 + end_pos[1]**2
+        # Use only the primary (ABC) coordinates for delta move checks.
+        primary_end = move.end_pos[:3]
+        end_xy2 = primary_end[0]**2 + primary_end[1]**2
         
         # Handle R and T moves separately
         if all(not d for d in move.axes_d[:3]) and any(move.axes_d[3:]):
             # Pure R/T move - no checks needed
             return
             
-        # Rest of the delta movement checks
+        # Rest of the delta movement checks using primary_end:
         if end_xy2 <= self.limit_xy2 and not move.axes_d[2]:
-            # Normal XY move
             return
         if self.need_home:
             raise move.move_error("Must home first")
-        end_z = end_pos[2]
+        end_z = primary_end[2]
         limit_xy2 = self.max_xy2
         if end_z > self.limit_z:
             above_z_limit = end_z - self.limit_z
@@ -175,8 +187,7 @@ class DeltaKinematics:
             )
             limit_xy2 = min(limit_xy2, allowed_radius**2)
         if end_xy2 > limit_xy2 or end_z > self.max_z or end_z < self.min_z:
-            # Move out of range - verify not a homing move
-            if (end_pos[:2] != self.home_position[:2]
+            if (primary_end[:2] != self.home_position[:2]
                 or end_z < self.min_z or end_z > self.home_position[2]):
                 raise move.move_error()
             limit_xy2 = -1.
@@ -185,8 +196,6 @@ class DeltaKinematics:
             move.limit_speed(self.max_z_velocity * z_ratio,
                              self.max_z_accel * z_ratio)
             limit_xy2 = -1.
-        # Limit the speed/accel of this move if is is at the extreme
-        # end of the build envelope
         extreme_xy2 = max(end_xy2, move.start_pos[0]**2 + move.start_pos[1]**2)
         if extreme_xy2 > self.slow_xy2:
             r = 0.5
@@ -203,10 +212,9 @@ class DeltaKinematics:
             'cone_start_z': self.limit_z,
         }
     def get_calibration(self):
-        endstops = [rail.get_homing_info().position_endstop
-                    for rail in self.rails]
-        stepdists = [rail.get_steppers()[0].get_step_dist()
-                     for rail in self.rails]
+        # Use only delta rails for distance and calibration calculations.
+        endstops = [rail.get_homing_info().position_endstop for rail in self.move_rails]
+        stepdists = [rail.get_steppers()[0].get_step_dist() for rail in self.move_rails]
         return DeltaCalibration(self.radius, self.angles, self.arm_lengths,
                                 endstops, stepdists)
 

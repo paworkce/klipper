@@ -95,34 +95,25 @@ class SelectReactor:
     NOW = _NOW
     NEVER = _NEVER
     def __init__(self, gc_checking=False):
-        logging.info("Initializing Reactor with gc_checking=%s", gc_checking)
         # Main code
         self._process = False
-        logging.info("Set _process to False")
         self.monotonic = chelper.get_ffi()[1].get_monotonic
-        logging.info("Set monotonic function")
         # Python garbage collection
         self._check_gc = gc_checking
         self._last_gc_times = [0., 0., 0.]
-        logging.info("Initialized garbage collection settings")
         # Timers
         self._timers = []
         self._next_timer = self.NEVER
-        logging.info("Initialized timers")
         # Callbacks
         self._pipe_fds = None
         self._async_queue = queue.Queue()
-        logging.info("Initialized callbacks")
         # File descriptors
         self._read_fds = []
         self._write_fds = []
-        logging.info("Initialized file descriptors")
         # Greenlets
         self._g_dispatch = None
         self._greenlets = []
         self._all_greenlets = []
-        logging.info("Initialized greenlets")
-        logging.info("Reactor initialized")
     def get_gc_stats(self):
         return tuple(self._last_gc_times)
     # Timers

@@ -29,8 +29,8 @@ class Move:
         if move_d < .000000001:
             # Extrude only move
             self.end_pos = (start_pos[0], start_pos[1], start_pos[2],
-                            end_pos[3]
-                            , start_pos[4], start_pos[5])
+                            start_pos[3]
+                            , start_pos[4], end_pos[5])
             #axes_d[0] = axes_d[1] = axes_d[2] = 0.
             #self.move_d = move_d = abs(axes_d[3])
             axes_d[0] = axes_d[1] = axes_d[2] = axes_d[3] = axes_d[4] = 0.
@@ -493,7 +493,7 @@ class ToolHead:
             return
         if move.is_kinematic_move:
             self.kin.check_move(move)
-        if move.axes_d[3]:
+        if move.axes_d[5]:
             self.extruder.check_move(move)
         self.commanded_pos[:] = move.end_pos
         self.lookahead.add_move(move)
@@ -520,7 +520,7 @@ class ToolHead:
             eventtime = self.reactor.pause(eventtime + 0.100)
     def set_extruder(self, extruder, extrude_pos):
         self.extruder = extruder
-        self.commanded_pos[3] = extrude_pos
+        self.commanded_pos[5] = extrude_pos
     def get_extruder(self):
         return self.extruder
     # Homing "drip move" handling
